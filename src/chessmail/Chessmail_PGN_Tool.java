@@ -195,6 +195,15 @@ public class Chessmail_PGN_Tool
 		}
 		else
 		{
+			if (http.verbose)
+			{
+				try (FileOutputStream fsout = new FileOutputStream("login.html"))
+				{
+					fsout.write(page.getBytes());
+					fsout.flush();
+				}
+			}
+
 			throw new IllegalArgumentException("Es konnte kein Hash für den Login ermittelt werden!");
 		}
 
