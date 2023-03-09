@@ -16,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
@@ -49,6 +50,7 @@ public class Chessmail_PGN_Tool
 	private final Pattern pPageCount = Pattern.compile("(.*p=)(\\d+)");
 	private final Pattern pHash = Pattern.compile("const z = '(.*)'");
 	private final Pattern pFilename = Pattern.compile("filename=(.*)");
+	private final Pattern pCMCookie = Pattern.compile("document\\.cookie\\ =\\ \"tk=([^\"]+)\"");
 	private AtomicInteger count;
 	private String check, username, password, downloadFolder;
 	private Boolean verbose = false;
@@ -184,6 +186,8 @@ public class Chessmail_PGN_Tool
 		String URL_download = "https://www.chessmail.de/game/download/chessmail-game.pgn?key=#GAME#";
 
 		CookieHandler.setDefault(new CookieManager());
+
+		http.setCookies(Arrays.asList(http.getCMCookieInfo()));
 
 		String page = http.GetPageContent(URL_login);
 		Matcher mHash = http.pHash.matcher(page);
@@ -416,8 +420,6 @@ public class Chessmail_PGN_Tool
 		conn.setRequestProperty("Sec-Fetch-User", "?1");
 		conn.setRequestProperty("Upgrade-Insecure-Requests", "1");
 		conn.setRequestProperty("Referer", "https://www.chessmail.de/login");
-		conn.setRequestProperty("Cookie",
-				"_ga=GA1.1.1095315191.1647621649; cookieconsent_status=dismiss; cm_pi=ff5dcb282cd64d1eb710ca424feeb430; _ga_8VJTNF0EH6=GS1.1.1664218164.127.1.1664223406.0.0.0; _gcl_au=1.1.1836214296.1672521101; _ga_NN8WMRNPWL=GS1.1.1675176229.93.1.1675183438.0.0.0; tk=001a; JSESSIONID=FF29559BB6BECCB108D3AD7AB371BAE6");
 
 		if (cookies != null)
 		{
@@ -437,9 +439,30 @@ public class Chessmail_PGN_Tool
 		}
 		in.close();
 
-		setCookies(conn.getHeaderFields().get("Set-Cookie"));
-
 		return response.toString();
+	}
+
+	public String getCMCookieInfo()
+	{
+		String cmCookie = "";
+
+		try
+		{
+			String body = Jsoup.connect(URL_base).execute().body();
+
+			Matcher mCookie = this.pCMCookie.matcher(body);
+			if (mCookie.find())
+			{
+				cmCookie = "tk=" + mCookie.group(1);
+			}
+		}
+		catch (IOException e)
+		{
+			if (this.verbose)
+				printMe(e.getLocalizedMessage());
+		}
+
+		return cmCookie;
 	}
 
 	public String getFormParams(String html, String username, String password)
