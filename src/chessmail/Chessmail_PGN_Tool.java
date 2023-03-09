@@ -18,6 +18,11 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,8 +39,6 @@ import org.apache.commons.cli.ParseException;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
-import org.jsoup.Connection;
-import org.jsoup.Connection.Response;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -49,20 +52,18 @@ public class Chessmail_PGN_Tool
 	private final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36";
 	private final Pattern pPageCount = Pattern.compile("(.*p=)(\\d+)");
 	private final Pattern pHash = Pattern.compile("const z = '(.*)'");
-	private final Pattern pFilename = Pattern.compile("filename=(.*)");
 	private final Pattern pCMCookie = Pattern.compile("document\\.cookie\\ =\\ \"tk=([^\"]+)\"");
-	private AtomicInteger count;
-	private String check, username, password, downloadFolder;
-	private Boolean verbose = false;
-
-	private String Filter_minMoves, Filter_openingString, Filter_wonBy, Filter_opponentname, Filter_includeTimeoutGames, Filter_onlyRatedGames;
-
+	static AtomicInteger count;
+	static Boolean Verbose = false;
+	private int maxThreads;
+	private String Filter_minMoves, Filter_openingString, Filter_wonBy, Filter_opponentname, Filter_includeTimeoutGames, Filter_onlyRatedGames, check, username,
+			password, downloadFolder;
 	private static Options options = new Options();
-
 	private static String filenamePGN = "chessmail_export.pgn";
 	private static final String URL_base = "https://www.chessmail.de";
 	private static final String URL_login = URL_base + "/login";
 	private static final String URL_logout = URL_base + "/logout.html";
+	private static String URL_download = "https://www.chessmail.de/game/download/chessmail-game.pgn?key=#GAME#";
 
 	enum FilterWonBy
 	{
@@ -109,6 +110,10 @@ public class Chessmail_PGN_Tool
 		password.setRequired(true);
 		options.addOption(password);
 
+		Option maxThreads = new Option("t", true, "max threads");
+		maxThreads.setRequired(false);
+		options.addOption(maxThreads);
+
 		Option includeTimeoutGames = new Option("Ft", true, "include timeout games? (true | false)");
 		includeTimeoutGames.setRequired(false);
 		options.addOption(includeTimeoutGames);
@@ -148,10 +153,11 @@ public class Chessmail_PGN_Tool
 			System.exit(1);
 		}
 
-		http.verbose = cmd.hasOption(verbose);
+		Verbose = cmd.hasOption(verbose);
 		http.downloadFolder = cmd.getOptionValue(folder, FileSystems.getDefault().getPath("").toAbsolutePath().toString());
 		http.username = cmd.getOptionValue(username);
 		http.password = cmd.getOptionValue(password);
+		http.maxThreads = Integer.parseInt(cmd.getOptionValue(maxThreads, "1"));
 
 		http.Filter_includeTimeoutGames = cmd.getOptionValue(includeTimeoutGames, "true");
 		http.Filter_minMoves = cmd.getOptionValue(minMoves, "");
@@ -169,7 +175,7 @@ public class Chessmail_PGN_Tool
 		filenamePGN = cmd.getOptionValue(filename, filenamePGN);
 
 		LocalDateTime startTime = LocalDateTime.now();
-		http.printMe("Starting at " + startTime.truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_LOCAL_TIME), true, true);
+		Chessmail_PGN_Tool.printMe("Starting at " + startTime.truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_LOCAL_TIME), true, true);
 
 		String URL_start = "https://www.chessmail.de/game/list/finished.html?";
 		URL_start += "includeTimeoutGames=#INCLUDETIMEOUTGAMES#&";
@@ -183,7 +189,6 @@ public class Chessmail_PGN_Tool
 		URL_start += "d-49280-p=#PAGENO#&";
 		URL_start += "sent=true&";
 		URL_start += "_includeTimeoutGames=on";
-		String URL_download = "https://www.chessmail.de/game/download/chessmail-game.pgn?key=#GAME#";
 
 		CookieHandler.setDefault(new CookieManager());
 
@@ -199,7 +204,7 @@ public class Chessmail_PGN_Tool
 		}
 		else
 		{
-			if (http.verbose)
+			if (Verbose)
 			{
 				try (FileOutputStream fsout = new FileOutputStream("login.html"))
 				{
@@ -213,8 +218,9 @@ public class Chessmail_PGN_Tool
 
 		String postParams = http.getFormParams(page, http.username, http.password);
 
-		http.printMe("Logging in...", true, true);
+		Chessmail_PGN_Tool.printMe("Logging in...", true, false);
 		String result = http.sendPost(URL_login, postParams);
+		Chessmail_PGN_Tool.printMe("ok", true, true);
 
 		String nextUrl = URL_start.replace("#USER#", http.username);
 		nextUrl = nextUrl.replace("#INCLUDETIMEOUTGAMES#", http.Filter_includeTimeoutGames.toString());
@@ -232,7 +238,7 @@ public class Chessmail_PGN_Tool
 		Document doc = Jsoup.parse(result);
 		Element ele = doc.select(".searchfound").get(0);
 
-		http.count = new AtomicInteger(0);
+		count = new AtomicInteger(0);
 
 		Integer pagingCount = 0;
 		if (doc.select("span.icon.icon-angles-right.size-1.set-solid").size() > 0)
@@ -258,56 +264,74 @@ public class Chessmail_PGN_Tool
 			urlArray.add(nextUrl);
 		}
 
-		if (!http.verbose)
-			http.printMe("Processing", true, false);
+		if (!Verbose)
+			Chessmail_PGN_Tool.printMe("Processing", true, false);
 
 		FileUtils.deleteQuietly(new File(FilenameUtils.concat(http.downloadFolder, filenamePGN)));
 
-		urlArray.parallelStream().forEach(url ->
-		{
-			if (http.verbose)
-				http.printMe("Processing page " + url);
-			else
-				http.printMe(".", true, false);
+		ExecutorService executor = Executors.newFixedThreadPool(http.maxThreads);
+		List<Callable<String>> taskList = new ArrayList<>();
 
-			String resultT = null;
+		urlArray.forEach(url -> taskList.add(new CMResultPageCallable(url, http.cookies)));
+
+		List<Future<String>> resultList = null;
+		try
+		{
+			resultList = executor.invokeAll(taskList);
+		}
+		catch (InterruptedException e)
+		{
+			e.printStackTrace();
+		}
+		executor.shutdownNow();
+
+		List<CMDownloadRunnable> downloads = new ArrayList<CMDownloadRunnable>();
+		for (Future<String> url : resultList)
+		{
 			try
 			{
-				resultT = http.GetPageContent(url);
-			}
-			catch (Exception e1)
-			{
-				e1.printStackTrace();
-				System.exit(1);
-			}
-			Document docT = Jsoup.parse(resultT);
+				Document docT = Jsoup.parse(url.get());
 
-			for (Element e : docT.select("#game tbody tr"))
-			{
-				String gameID = e.selectFirst("td a").attr("href").replace("/game/", "");
-				http.download_finished_games(URL_download.replace("#GAME#", gameID));
+				for (Element e : docT.select("#game tbody tr"))
+				{
+					String gameID = e.selectFirst("td a").attr("href").replace("/game/", "");
+					CMDownloadRunnable download = new CMDownloadRunnable(URL_download.replace("#GAME#", gameID), http.cookies, http.downloadFolder,
+							Chessmail_PGN_Tool.filenamePGN);
+					downloads.add(download);
+				}
 			}
-		});
+			catch (Exception ex)
+			{
+				ex.printStackTrace();
+			}
+		}
 
-		if (!http.verbose)
+		CompletableFuture<?>[] completableFutures = downloads.stream().map(CompletableFuture::runAsync).toArray(CompletableFuture<?>[]::new);
+		CompletableFuture.allOf(completableFutures).get();
+		// while (!CompletableFuture.allOf(completableFutures).isDone())
+		// {
+		// Thread.sleep(500);
+		// }
+
+		if (!Verbose)
 			System.out.println();
 
-		http.printMe("Logging out...", true, true);
+		Chessmail_PGN_Tool.printMe("Logging out...", true, true);
 
 		http.GetPageContent(URL_logout);
 
 		LocalDateTime endTime = LocalDateTime.now();
-		http.printMe("Done at " + endTime.truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_LOCAL_TIME), true, true);
+		Chessmail_PGN_Tool.printMe("Done at " + endTime.truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_LOCAL_TIME), true, true);
 		long hours = ChronoUnit.HOURS.between(startTime, endTime);
 		long minutes = ChronoUnit.MINUTES.between(startTime, endTime) % 60;
 		long seconds = ChronoUnit.SECONDS.between(startTime, endTime) % 60;
-		http.printMe("Duration: " + hours + " hours " + minutes + " minutes " + seconds + " seconds", true, true);
-		http.printMe("Games count: " + http.count, true, true);
+		Chessmail_PGN_Tool.printMe("Duration: " + hours + " hours " + minutes + " minutes " + seconds + " seconds", true, true);
+		Chessmail_PGN_Tool.printMe("Games count: " + Chessmail_PGN_Tool.count, true, true);
 	}
 
-	private void printMe(String msg, Boolean force, Boolean newLine)
+	static void printMe(String msg, Boolean force, Boolean newLine)
 	{
-		if (this.verbose || force)
+		if (Verbose || force)
 		{
 			if (newLine)
 				System.out.println(msg);
@@ -316,40 +340,9 @@ public class Chessmail_PGN_Tool
 		}
 	}
 
-	private void printMe(String msg)
+	static void printMe(String msg)
 	{
-		this.printMe(msg, false, true);
-	}
-
-	private synchronized void download_finished_games(String downloadURL)
-	{
-		try
-		{
-			Connection con = Jsoup.connect(downloadURL);
-			con.header("Accept-Encoding", "gzip, deflate, br");
-			con.userAgent(USER_AGENT);
-			con.ignoreContentType(true);
-			con.maxBodySize(0);
-			con.timeout(600000);
-			Response resp = con.execute();
-			byte[] bytes = resp.bodyAsBytes();
-			String savedFileName = FilenameUtils.getName(downloadURL);
-
-			Matcher mFilename = pFilename.matcher(resp.header("Content-Disposition"));
-			if (mFilename.find())
-				savedFileName = mFilename.group(1);
-
-			FileOutputStream fos = new FileOutputStream(FilenameUtils.concat(this.downloadFolder, filenamePGN), true);
-			fos.write(bytes);
-			fos.write(System.getProperty("line.separator").getBytes());
-			fos.close();
-
-			this.printMe("PGN added: " + savedFileName + " [count: ]" + this.count.incrementAndGet());
-		}
-		catch (IOException e)
-		{
-			this.printMe("Could not read the file at '" + downloadURL + "'.");
-		}
+		printMe(msg, false, true);
 	}
 
 	private String sendPost(String url, String postParams) throws Exception
@@ -377,7 +370,6 @@ public class Chessmail_PGN_Tool
 		conn.setRequestProperty("Content-Length", contentLength);
 
 		conn.setDoOutput(true);
-		conn.setDoInput(true);
 
 		DataOutputStream wr = new DataOutputStream(conn.getOutputStream());
 		wr.writeBytes(postParams);
@@ -458,7 +450,7 @@ public class Chessmail_PGN_Tool
 		}
 		catch (IOException e)
 		{
-			if (this.verbose)
+			if (Verbose)
 				printMe(e.getLocalizedMessage());
 		}
 
