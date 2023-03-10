@@ -148,7 +148,7 @@ public class Chessmail_PGN_Tool
 		}
 		catch (ParseException e)
 		{
-			System.out.println(e.getMessage());
+			Chessmail_PGN_Tool.printMe(e.getLocalizedMessage(), true, true);
 			formatter.printHelp("utility-name", options);
 			System.exit(1);
 		}
@@ -190,9 +190,9 @@ public class Chessmail_PGN_Tool
 		URL_start += "sent=true&";
 		URL_start += "_includeTimeoutGames=on";
 
-		CookieHandler.setDefault(new CookieManager());
-
 		http.setCookies(Arrays.asList(http.getCMCookieInfo()));
+
+		CookieHandler.setDefault(new CookieManager());
 
 		String page = http.GetPageContent(URL_login);
 		Matcher mHash = http.pHash.matcher(page);
@@ -236,6 +236,12 @@ public class Chessmail_PGN_Tool
 		result = http.GetPageContent(nextUrl);
 
 		Document doc = Jsoup.parse(result);
+		if (doc.select(".searchfound").size() == 0)
+		{
+			Chessmail_PGN_Tool.printMe("Keine Partien gefunden!", true, true);
+			Chessmail_PGN_Tool.printMe("Beenden...", true, true);
+			System.exit(1);
+		}
 		Element ele = doc.select(".searchfound").get(0);
 
 		count = new AtomicInteger(0);
@@ -308,10 +314,6 @@ public class Chessmail_PGN_Tool
 
 		CompletableFuture<?>[] completableFutures = downloads.stream().map(CompletableFuture::runAsync).toArray(CompletableFuture<?>[]::new);
 		CompletableFuture.allOf(completableFutures).get();
-		// while (!CompletableFuture.allOf(completableFutures).isDone())
-		// {
-		// Thread.sleep(500);
-		// }
 
 		if (!Verbose)
 			System.out.println();

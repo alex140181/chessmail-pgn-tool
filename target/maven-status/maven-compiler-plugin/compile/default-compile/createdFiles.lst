@@ -1,2 +1,5 @@
 chessmail\Chessmail_PGN_Tool.class
+chessmail\CMConnection.class
+chessmail\CMDownloadRunnable.class
+chessmail\CMResultPageCallable.class
 chessmail\Chessmail_PGN_Tool$FilterWonBy.class
